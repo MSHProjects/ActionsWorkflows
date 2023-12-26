@@ -4,6 +4,7 @@ on:
     inputs:
       node_version:
         required: true
+        type: number
       repos_name:
         required: true
         type: string

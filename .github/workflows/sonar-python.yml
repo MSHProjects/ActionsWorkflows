@@ -5,6 +5,7 @@ on:
     inputs:
       python_version:
         required: true
+        type: string
       repos_name:
         required: true
         type: string
