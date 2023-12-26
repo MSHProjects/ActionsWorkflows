@@ -21,18 +21,17 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-          SONAR_BRANCH_NAME: ${{ github.ref }}
-      - name: On failure
-        if: ${{ failure() }}
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        uses: Ilshidur/action-discord@0.3.2
-        with:
-          args: "{{ env.REPOS_NAME }}: @everyone Job it has failed for the SonarQube "
-      - name: End SonarQube
-        uses: Ilshidur/action-discord@0.3.2
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        with:
-          args: "{{ env.REPOS_NAME }}: @everyone SonarQube has ended his scan check your project pelase "
+      # - name: On failure
+      #   if: ${{ failure() }}
+      #   env:
+      #     DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+      #   uses: Ilshidur/action-discord@0.3.2
+      #   with:
+      #     args: "{{ env.REPOS_NAME }}: @everyone Job it has failed for the SonarQube "
+      # - name: End SonarQube
+      #   uses: Ilshidur/action-discord@0.3.2
+      #   env:
+      #     DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+      #   with:
+      #     args: "{{ env.REPOS_NAME }}: @everyone SonarQube has ended his scan check your project pelase "
           
