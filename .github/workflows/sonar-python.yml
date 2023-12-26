@@ -9,6 +9,15 @@ on:
       path_requirements:
         type: string
         required: true
+      projectKey:
+        type: string
+        required: true
+      projectBaseDir:
+        type: string
+        required: true
+      bash_script: 
+        type: string
+        required: false
     secrets:
       SONAR_TOKEN:
           required: true
@@ -25,10 +34,17 @@ jobs:
 
     steps:
     - uses: actions/checkout@v2
+    - name: run bash script if exists 
+      if: ${{ inputs.bash_script != '' }}
+      run: |
+        echo "${{ inputs.bash_script }}" > script.sh
+        chmod +x script.sh
+        ./script.sh
     - name: Set up Python
       uses: actions/setup-python@v1
       with:
         python-version: '${{ inputs.python_version}}'
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
@@ -38,17 +54,6 @@ jobs:
       env:
         SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-    - name: On failure
-      if: ${{ failure() }}
-      env:
-        DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-      uses: Ilshidur/action-discord@0.3.2
-      with:
-        args: "@everyone Job it has failed for the SonarQube "
-    - name: End SonarQube
-      uses: Ilshidur/action-discord@0.3.2
-      env:
-        DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-      with:
-        args: "@everyone SonarQube has ended his scan check your project pelase "
-          
+        projectKey: ${{ inputs.projectKey }}
+        projectBaseDir: ${{ inputs.projectBaseDir }}
+   
