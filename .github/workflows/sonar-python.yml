@@ -51,9 +51,10 @@ jobs:
         pip install -r ${{ inputs.path_requirements }}
     - name: SonarQube Scan
       uses: sonarsource/sonarqube-scan-action@master
+      with:
+        args: >
+          -Dsonar.projectKey=${{ inputs.projectKey }}
+          -Dsonar.projectBaseDir=${{ inputs.projectBaseDir }}
       env:
         SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-        projectKey: ${{ inputs.projectKey }}
-        projectBaseDir: ${{ inputs.projectBaseDir }}
-   
