@@ -5,9 +5,7 @@ on:
       node_version:
         required: true
         type: number
-      repos_name:
-        required: true
-        type: string
+
     
     secrets:
       SONAR_TOKEN:
@@ -41,11 +39,11 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         uses: Ilshidur/action-discord@0.3.2
         with:
-          args: "{{ inputs.repos_name }}: @everyone Job it has failed for the SonarQube "
+          args: " @everyone Job it has failed for the SonarQube "
       - name: End SonarQube
         uses: Ilshidur/action-discord@0.3.2
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         with:
-          args: "{{ inputs.repos_name }}: @everyone SonarQube has ended his scan check your project pelase "
+          args: " @everyone SonarQube has ended his scan check your project pelase "
           
