@@ -7,8 +7,10 @@ env:
   REPOS: ${{ github.event.client_payload.REPOS }}
   PAT: ${{ github.event.client_payload.PAT }}
   REF: ${{ github.event.client_payload.REF }}
-  bash_script: ${{ github.event.client_payload.bash}}
-  node_version: ${{ github.event.client_payload.node}}
+  bash_script: ${{ github.event.client_payload.bash_script}}
+  node_version: ${{ github.event.client_payload.node_version}}
+  projectKey: ${{ github.event.client_payload.projectKey}}
+  projectBaseDir: ${{ github.event.client_payload.projectBaseDir}}
 jobs:
   main:
     runs-on: ubuntu-latest
