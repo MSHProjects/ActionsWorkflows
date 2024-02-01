@@ -1,0 +1,156 @@
+# This workflow will install Python dependencies, run tests and lint with a single version of Python
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
+
+name: aws-lambda-ci-cd
+
+env:
+  DOCKER_IMAGE: hello-world
+  ECR_REPOSITORY: hello-world
+  AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+  AWS_ACCOUNT: ${{ secrets.AWS_ACCOUNT }}
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+
+permissions:
+  contents: read
+
+jobs:
+  test-validation:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v3
+      with:
+        python-version: "3.10"
+    - name: Install system libraries
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libcurl4-openssl-dev libsm6 libxext6 ffmpeg libgl1
+  
+    - name: Install dependencies
+      run: |
+        python -m pip install -r reqs.txt
+    - name: Install pytest
+      run: python -m pip install pytest httpx
+    - name: Test with pytest
+      run: |
+        pytest --disable-warnings
+  continuos-integration:
+    needs: test-validation
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Build docker images
+      id: build-image
+      
+      run: | 
+        echo ---Building images and starting up docker---
+        docker build -t $DOCKER_IMAGE .
+    - name: Test Docker Image
+      env:
+        DOCKER_IMAGE: hello-world
+      run: |
+        echo --running docker image ---
+        docker run -p 9000:8080 -d $DOCKER_IMAGE
+        docker ps
+  continuos-deployment:
+    needs: continuos-integration
+    runs-on: ubuntu-latest
+    steps:      
+      - name: Print env variables
+        run: |
+          echo $AWS_ACCOUNT
+          echo $AWS_DEFAULT_REGION
+          echo $ECR_REPOSITORY
+      - name: Install AWS CLI        
+        uses: unfor19/install-aws-cli-action@v1        
+        with:          
+          version: 2        
+        env:          
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}          
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}          
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}    
+                  
+      - name: Configure AWS credentials        
+        uses: aws-actions/configure-aws-credentials@v1        
+        with:          
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}                
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}          
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
+      - name: Login to Amazon ECR        
+        id: login-ecr        
+        uses: aws-actions/amazon-ecr-login@v1                  
+      - name: Check out code        
+        uses: actions/checkout@v2     
+      - name: Checking/Creating Repository
+        run: |
+          REPOSITORY_ARN=$(aws ecr describe-repositories --repository-names $ECR_REPOSITORY --query 'repositories[0].repositoryUri' --output text || true)
+          echo "REPOSITORY_ARN is $REPOSITORY_ARN"
+          if [ -z "$REPOSITORY_ARN" ]; then 
+            aws ecr create-repository --repository-name $ECR_REPOSITORY \
+              --image-scanning-configuration scanOnPush=true \
+              --region $AWS_DEFAULT_REGION
+            echo  "Repos created "
+          
+          else 
+            echo "$ECR_REPOSITORY already exists !" ;
+          fi
+        
+      - name: Build, tag, and push the image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: latest
+        run: |
+            # Build a docker container and push it to ECR 
+            docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+            echo "Pushing image to ECR..."
+            docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+            echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+      - name: check if lambda functions exists or not
+        continue-on-error: true
+        env:
+          LAMBDA_CONTAINER_NAME: hello-world-salut
+        run: |
+          FUNCTION_ARN=$(aws lambda get-function --function-name $LAMBDA_CONTAINER_NAME --query 'Configuration.FunctionArn' --output text)
+          echo "FUNCTION_ARN=$FUNCTION_ARN" >> $GITHUB_ENV
+      - name: Deploy Lambda function
+        env:
+          LAMBDA_CONTAINER_NAME: hello-world-salut
+          LAMBDA_ROLE_ARN: ${{ secrets.LAMBDA_FUNCTION_ROLE_ARN }} 
+        run: |
+          echo  $LAMBDA_ROLE_ARN
+          export IMAGE_URI=$AWS_ACCOUNT.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPOSITORY:latest         
+          if [ -z "$FUNCTION_ARN" ]; then
+            echo "it s $FUNCTION_ARN"; 
+            aws lambda create-function \
+                --function-name $LAMBDA_CONTAINER_NAME \
+                --role arn:aws:iam::217262523951:role/lambda-role \
+                --package-type Image --code ImageUri=$IMAGE_URI \
+                --timeout 600 \
+                --memory-size 128
+          else
+            echo "inside else which means it already exists"
+            aws lambda update-function-code \
+                  --function-name $LAMBDA_CONTAINER_NAME \
+                  --image-uri $IMAGE_URI \
+                  --publish
+            
+            # wait for the lambda function to complete the update before applying any config
+            aws lambda wait function-updated \
+              --function-name $LAMBDA_CONTAINER_NAME
+    
+            aws lambda update-function-configuration \
+              --function-name $LAMBDA_CONTAINER_NAME \
+              --timeout 600 \
+              --memory-size 512
+          fi

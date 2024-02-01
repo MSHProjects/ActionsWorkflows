@@ -1,0 +1,145 @@
+name: Production Deployment
+
+on:
+  # this for manual approval
+  workflow_dispatch:
+jobs:
+  validations:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Discord notifications
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        uses: Ilshidur/action-discord@0.3.2
+        with:
+          args: "{{ EVENT_PAYLOAD.repository.full_name }}: @everyone Starting pipeline FrontEnd Production"
+
+      # validate that we are working on the correct branch
+      - name: Get branch name
+        id: branch-name
+        uses: tj-actions/branch-names@v7
+      - name: Check branch
+        run: |
+          echo "branch name ${{ steps.branch-name.outputs.current_branch }}"
+          if [ "${{ steps.branch-name.outputs.current_branch }}" == "main" ]; then
+          echo "This is the main branch."
+          else
+          echo "::error::This is not the main branch."
+          exit 1
+          fi
+      - name: Failure Detection
+        if: ${{ failure() }}
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        uses: Ilshidur/action-discord@0.3.2
+        with:
+          args: "{{ EVENT_PAYLOAD.repository.full_name }}: @everyone Job 'validations' has failed, reminder run the pipeline on main branch thanks to you @rania1101 !"
+
+  build:
+    needs: validations
+    name: Build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Get Git Commit ID
+        id: commit_id
+        run: echo "COMMIT_ID=$(git show -s --format=%h)" >> $GITHUB_ENV
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build  --build-arg configuration=production  -t ${{ secrets.AWS_REPOSITORY_URI }}:${{ env.COMMIT_ID }} .
+          docker push ${{ secrets.AWS_REPOSITORY_URI }}:${{ env.COMMIT_ID }}
+      - name: Job failure detection
+        if: ${{ failure() }}
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        uses: Ilshidur/action-discord@0.3.2
+        with:
+          args: "{{ EVENT_PAYLOAD.repository.full_name }}: @everyone Job 'build' has failed!!! :o "
+
+  deploy:
+    needs: build
+    name: Deploy
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Get Git Commit ID
+        id: commit_id
+        run: echo "COMMIT_ID=$(git show -s --format=%h)" >> $GITHUB_ENV
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - name: Create taskdefinition file
+        run: |
+          echo "$TASK_DEFINITION_CONTENT" > ./task-definition.json
+        env:
+          TASK_DEFINITION_CONTENT: ${{ secrets.TASK_DEFINITION_CONTENT }}
+
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ./task-definition.json
+          container-name: ${{ secrets.AWS_CONTAINER_NAME }} # this the name of the container defined in the task definition
+          image: "${{ secrets.AWS_REPOSITORY_URI }}:${{ env.COMMIT_ID }}"
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ secrets.AWS_ECS_SERVICE }}
+          cluster: ${{ secrets.AWS_ECS_CLUSTER }}
+          wait-for-service-stability: true
+      - name: Job failure detection
+        if: ${{ failure() }}
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        uses: Ilshidur/action-discord@0.3.2
+        with:
+          args: "{{ EVENT_PAYLOAD.repository.full_name }}: @everyone Job 'deploy' has failed!!! :o "
+      - name: Pipeline End
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        uses: Ilshidur/action-discord@0.3.2
+        with:
+          args: "{{ EVENT_PAYLOAD.repository.full_name }}: @everyone Pipeline production has ended please check aws and the site if still working XD!!!"
+
+    # - name: Check deployment status
+    #   id: check-status
+    #   run: |
+    #     DEPLOYMENT_STATUS=$(aws ecs describe-services --cluster ${{ secrets.AWS_ECS_CLUSTER }} --services ${{ secrets.AWS_ECS_SERVICE }} --query "services[0].deployments[?status=='PRIMARY'].status" --output text)
+    #     if [ "$DEPLOYMENT_STATUS" != "PRIMARY" ]; then
+    #       echo "Deployment failed. Initiating rollback..."
+    #       echo "ROLLBACK=true" >> $GITHUB_ENV
+    #     else
+    #       echo "Deployment successful."
+    #     fi
+    # - name: Rollback to previous task revision
+    #   if: ${{ env.ROLLBACK }} == 'true'
+    #   run: |
+    #     PREVIOUS_REVISION=$(aws ecs describe-task-definition --task-definition ${{ secrets.AWS_ECS_TASK_DEFINITION }} --query "taskDefinition.revision" --output text)
+    #     PREVIOUS_REVISION=$((PREVIOUS_REVISION-1))
+    #     aws ecs update-service --cluster ${{ secrets.AWS_ECS_CLUSTER }} --service ${{ secrets.AWS_ECS_SERVICE }} --task-definition ${{ secrets.AWS_ECS_TASK_DEFINITION }}:$PREVIOUS_REVISION
+    #   continue-on-error: true

@@ -1,0 +1,98 @@
+name: Test:Backend Deployment
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [backend-builder]
+
+jobs:
+  validator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+        with:
+            ref: test
+      # - name: check workflow actor
+      #   run: |
+      #     if [ "${{ github.actor }}" == "${{ secrets.PRIMARY_ACTOR }}" ] || [ "${{ github.actor }}" == "${{ secrets.SECONDRY_ACTOR }}" ]; then
+      #       echo "Allowed actor"
+      #     else
+      #       echo "::error::You are not allowed to run the pipeline."
+      #       exit 1
+      #     fi
+      # - name: Get branch name
+      #   id: branch-name
+      #   uses: tj-actions/branch-names@v7
+      # - name: Check branch
+      #   run: |
+      #     echo "branch name ${{ steps.branch-name.outputs.current_branch }}"
+      #     if [ "${{ steps.branch-name.outputs.current_branch }}" == "test" ]; then
+      #       echo "This is the test branch."
+      #     else
+      #       echo "This is not the test branch."
+      #       exit 1
+      #     fi
+  deploy:
+    needs: validator
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v2
+        with:
+            ref: test
+      - name: Get Git Commit ID
+        id: commit_id
+        run: echo "COMMIT_ID=$(git show -s --format=%h)" >> $GITHUB_ENV
+      
+      - name: Build docker image 
+        run: |
+          echo "building python"
+          mkdir releases
+          docker build -t test_core_api -f core_api/Dockerfile .
+          docker save test_core_api -o releases/test_core_api.tar
+      - name: Create PEM file and set permissions
+        run: |
+          echo "$PRIVATE_KEY_CONTENT" > private-key.pem
+          chmod 600 private-key.pem
+        env:
+          PRIVATE_KEY_CONTENT: ${{ secrets.PEM_FILE }}
+
+      - name: Check previous releases and renaming them with date
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ./private-key.pem ${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_IP }}  << EOF
+            actual_date=$(date '+%Y-%m-%d-%H-%M')
+            released="/home/ubuntu/projects/vbsmart/test/release"
+            echo "the released path is $released"
+            cd /home/ubuntu/projects/vbsmart/test/release
+            if [ -f "test_core_api.tar" ]; then
+              mv test_core_api.tar $actual_date.${{ env.COMMIT_ID }}.test_core_api.tar
+            fi
+          EOF
+      - name:  Copy released versions 
+        run: |
+          to_release="releases"
+          for elt in "$to_release"/*
+          do
+            scp -o StrictHostKeyChecking=no -i ./private-key.pem  $elt ${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_IP }}:/home/ubuntu/projects/vbsmart/test/release
+          done
+      - name: Importing docker container 
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ./private-key.pem  ${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_IP }} << EOF
+          
+           cd /home/ubuntu/projects/vbsmart/test/release
+           docker load -i  test_core_api.tar
+          EOF
+      - name: Running docker-compose 
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ./private-key.pem  ${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_IP }} << EOF
+           cd /home/ubuntu/projects/vbsmart/test/backend
+           docker-compose down
+           docker-compose up -d
+          EOF
+      - name: On failure
+        if: ${{ failure() }}
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        uses: Ilshidur/action-discord@0.3.2
+        with:
+          args: "{{ EVENT_PAYLOAD.repository.full_name }}: @mohamedkallel test backend pipeline,  Job 'deploy' has failed"

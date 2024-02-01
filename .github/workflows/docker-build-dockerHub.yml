@@ -1,0 +1,134 @@
+name: Staging Deployment
+
+on:
+  # push:
+  #   branches:
+  #     - master
+  workflow_dispatch: # this for manual approval
+
+jobs:
+  validations:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Discord notifications
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        uses: Ilshidur/action-discord@0.3.2
+        with:
+          args: "{{ EVENT_PAYLOAD.repository.full_name }}: @everyone Starting pipeline Staging"
+
+      - name: Get branch name
+        id: branch-name
+        uses: tj-actions/branch-names@v7
+      - name: Check branch
+        run: |
+          echo "branch name ${{ steps.branch-name.outputs.current_branch }}"
+          if [ "${{ steps.branch-name.outputs.current_branch }}" == "main" ]; then
+            echo "This is the main branch."
+          else
+            echo "This is not the main branch."
+            exit 1
+          fi
+      - name: Discord notifications
+        if: ${{ failure() }}
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        uses: Ilshidur/action-discord@0.3.2
+        with:
+          args: "{{ EVENT_PAYLOAD.repository.full_name }}: @everyone Job 'validations' has failed, reminder run the pipeline on main branch thanks to you @rania1101 !"
+
+  build:
+    needs: validations
+    runs-on: ubuntu-latest
+    env:
+      COMMIT_ID: ${{ github.sha }}
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Get Git Commit ID
+        id: commit_id
+        run: echo "COMMIT_ID=$(git show -s --format=%h)" >> $GITHUB_ENV
+
+      - name: Build Docker image
+        run: docker build  --build-arg configuration=staging  -t  ${{ secrets.DOCKERHUB_REPOSITORY }}:${{ env.COMMIT_ID }} .
+
+      - name: Deploy Docker image to DockerHub
+        run: |
+          docker login -u ${{ secrets.DOCKERHUB_USERNAME }} -p ${{ secrets.DOCKERHUB_TOKEN }}
+          docker push ${{ secrets.DOCKERHUB_REPOSITORY }}:${{ env.COMMIT_ID }}
+      - name: Job failure detection
+        if: ${{ failure() }}
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        uses: Ilshidur/action-discord@0.3.2
+        with:
+          args: "{{ EVENT_PAYLOAD.repository.full_name }}: @everyone Job 'build' has failed!!! for staging :o "
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      COMMIT_ID: ${{ github.sha }}
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Create PEM file and set permissions
+        run: |
+          echo "$PRIVATE_KEY_CONTENT" > private-key.pem
+          chmod 600 private-key.pem
+        env:
+          PRIVATE_KEY_CONTENT: ${{ secrets.PEM_FILE }}
+      - name: Get Git Commit ID
+        id: commit_id
+        run: echo "COMMIT_ID=$(git show -s --format=%h)" >> $GITHUB_ENV
+      - name: Connect to server using PEM file
+        run: ssh -o StrictHostKeyChecking=no -i ./private-key.pem  ${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_IP }}
+      - name: Login to Docker profile
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ./private-key.pem  ${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_IP }} << EOF
+            docker login -u ${{ secrets.DOCKERHUB_USERNAME }} -p ${{ secrets.DOCKERHUB_TOKEN }}
+          EOF
+      - name: Stop any running containers with the same Docker repository on the server
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ./private-key.pem  ${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_IP }} << EOF
+            docker stop ${{ secrets.CONTAINER_NAME }}
+            echo "docker stopped"
+            docker rm ${{ secrets.CONTAINER_NAME }}
+            echo "removed container"
+          EOF
+      - name: Delete images of the same repository
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ./private-key.pem  ${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_IP }} << EOF
+            docker images | grep ${{ secrets.DOCKERHUB_REPOSITORY }} | awk '{print $3}' | xargs -r >> dockers-repos-ids.txt
+            docker images | grep ${{ secrets.DOCKERHUB_REPOSITORY }} | awk '{print $3}' | xargs -r docker rmi -f
+            cat dockers-repos-ids.txt
+            rm dockers-repos-ids.txt
+            echo "done"
+          EOF
+      - name: Pull Docker image from DockerHub
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ./private-key.pem  ${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_IP }} << EOF
+
+          docker pull ${{ secrets.DOCKERHUB_REPOSITORY }}:${{ env.COMMIT_ID }}
+          EOF
+
+      - name: Run Docker compose on server
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ./private-key.pem ${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_IP }} << EOF
+            docker tag  ${{ secrets.DOCKERHUB_REPOSITORY }}:${{ env.COMMIT_ID }}  ${{ secrets.DOCKERHUB_REPOSITORY }}:latest
+            docker-compose -f /home/ubuntu/docker/gpt-review/docker-compose-front.yml down
+            docker-compose -f /home/ubuntu/docker/gpt-review/docker-compose-front.yml up -d
+          EOF
+      - name: Job failure detection
+        if: ${{ failure() }}
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        uses: Ilshidur/action-discord@0.3.2
+        with:
+          args: "{{ EVENT_PAYLOAD.repository.full_name }}: @everyone Job 'deploy' has failed!!! :o "
+      - name: Pipeline End
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        uses: Ilshidur/action-discord@0.3.2
+        with:
+          args: "{{ EVENT_PAYLOAD.repository.full_name }}: @everyone Pipeline Staging has ended please check  the site if still working XD!!!"

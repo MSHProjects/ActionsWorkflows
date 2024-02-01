@@ -1,0 +1,80 @@
+name: merge-pipeline
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "55 14 * * 1-5"
+
+permissions:
+  contents: write
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          ref: test
+      - name: Notification merge
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        uses: Ilshidur/action-discord@0.3.2
+        with:
+          args: "{{ EVENT_PAYLOAD.repository.full_name }}: @everyone Starting pipeline merge dev -> test"
+
+      - uses: actions/checkout@master
+        with:
+          ref: test
+
+      - name: merging branches
+        uses: devmasx/merge-branch@master
+        with:
+          type: now
+          from_branch: dev
+          target_branch: test
+          github_token: ${{ secrets.GIT_TOKEN }}
+      - name: On failure
+        if: ${{ failure() }}
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        uses: Ilshidur/action-discord@0.3.2
+        with:
+          args: "{{ EVENT_PAYLOAD.repository.full_name }}: <@&1067045534998728754> FAILURE merging dev -> test"
+  backend:
+    needs: merge
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout 
+        uses: actions/checkout@v3
+        
+      - name: triggering other pipeline
+        run: |
+          curl -XPOST -u "${{ secrets.GIT_USERNAME }}:${{ secrets.GIT_TOKEN }}" \
+            -H "Accept: application/vnd.github.everest-preview+json" \
+            "https://api.github.com/repos/VB-SMART/VB-SMART-code/dispatches" \
+            -d '{"event_type": "backend-builder", "client_payload": {"ref": "test"}}'
+      - name: Discord notifications
+        if: ${{ failure() }}
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        uses: Ilshidur/action-discord@0.3.2
+        with:
+          args: "{{ EVENT_PAYLOAD.repository.full_name }}: @everyone there were a problem in pipeline merge dev -> test"
+  frontend:
+    needs: merge
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout 
+        uses: actions/checkout@v3
+        
+      - name: triggering other pipeline
+        run: |
+          curl -XPOST -u "${{ secrets.GIT_USER }}:${{ secrets.GIT_TOKEN }}" \
+            -H "Accept: application/vnd.github.everest-preview+json" \
+            "https://api.github.com/repos/VB-SMART/VB-SMART-code/dispatches" \
+            -d '{"event_type": "frontend-builder", "client_payload": {"ref": "test"}}'
+      - name: Discord notifications
+        if: ${{ failure() }}
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        uses: Ilshidur/action-discord@0.3.2
+        with:
+          args: "{{ EVENT_PAYLOAD.repository.full_name }}: @everyone there were a problem in pipeline merge dev -> test"
